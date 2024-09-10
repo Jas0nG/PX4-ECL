@@ -43,18 +43,39 @@
 #include <ecl.h>
 #include <mathlib/mathlib.h>
 
+
+
+
+/*
+
+
+           ==^==                                   UAV        -----
+                                                                |
+                                                                |
+                       ^^^^^^^                              _state.pos(2)
+     ^^^            ^^^         ^^^^^                           |
+  ^^    ^^^^    ^^                   ^^^^          Terrain      |      -------
+^^          ^^^^                          ^^^^                  |     terrain_vpos
+----------------------------------------------     NED Frame   -----   -------
+*/
+
+// hagl: height above ground level
 bool Ekf::initHagl()
 {
 	bool initialized = false;
 
+	// 处于地面的情况
 	if (!_control_status.flags.in_air) {
 		// if on ground, do not trust the range sensor, but assume a ground clearance
+		// 如果在地面上，请不要信任距离传感器，而是假设地面间隙
 		_terrain_vpos = _state.pos(2) + _params.rng_gnd_clearance;
 		// use the ground clearance value as our uncertainty
+		// 使用地面间隙值作为我们的不确定性 sq 平方
 		_terrain_var = sq(_params.rng_gnd_clearance);
 		_time_last_fake_hagl_fuse = _time_last_imu;
 		initialized = true;
 
+	// 融合RangeFinder
 	} else if (shouldUseRangeFinderForHagl()
 		   && _range_sensor.isDataHealthy()) {
 		// if we have a fresh measurement, use it to initialise the terrain estimator
@@ -98,15 +119,18 @@ void Ekf::runTerrainEstimator()
 	} else {
 
 		// predict the state variance growth where the state is the vertical position of the terrain underneath the vehicle
+		// 预测状态方差增长，其中状态是车辆下方地形的垂直位置
 
 		// process noise due to errors in vehicle height estimate
 		_terrain_var += sq(_imu_sample_delayed.delta_vel_dt * _params.terrain_p_noise);
 
 		// process noise due to terrain gradient
+		// 地形变化导致的噪声，由水平速度和地形一致性得到
 		_terrain_var += sq(_imu_sample_delayed.delta_vel_dt * _params.terrain_gradient)
 				* (sq(_state.vel(0)) + sq(_state.vel(1)));
 
 		// limit the variance to prevent it becoming badly conditioned
+		// 饱和方差，防止它变得不良
 		_terrain_var = math::constrain(_terrain_var, 0.0f, 1e4f);
 
 		// Fuse range finder data if available
@@ -122,6 +146,7 @@ void Ekf::runTerrainEstimator()
 		}
 
 		// constrain _terrain_vpos to be a minimum of _params.rng_gnd_clearance larger than _state.pos(2)
+		// 限制_terrain_vpos至少比_state.pos(2)大_params.rng_gnd_clearance
 		if (_terrain_vpos - _state.pos(2) < _params.rng_gnd_clearance) {
 			_terrain_vpos = _params.rng_gnd_clearance + _state.pos(2);
 		}
@@ -136,12 +161,15 @@ void Ekf::fuseHagl()
 	const float meas_hagl = _range_sensor.getDistBottom();
 
 	// predict the hagl from the vehicle position and terrain height
+	// 这里为什么不是state.pos(2) - _terrain_vpos 是因为pred_hagl是正值(和传感器测量统一)。所以相当于整个公式取了负号
 	const float pred_hagl = _terrain_vpos - _state.pos(2);
 
 	// calculate the innovation
 	_hagl_innov = pred_hagl - meas_hagl;
 
 	// calculate the observation variance adding the variance of the vehicles own height uncertainty
+	// P(9,9) 位置Z的方差
+	// 测量方差
 	const float obs_variance = fmaxf(P(9,9) * _params.vehicle_variance_scaler, 0.0f)
 			     + sq(_params.range_noise)
 			     + sq(_params.range_noise_scaler * _range_sensor.getRange());
